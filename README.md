@@ -62,15 +62,30 @@ Layers: **routes -> controllers -> services -> repositories (Prisma)**. No busin
 ### Option A - Docker (everything, one command)
 
 ```bash
-cp .env.example .env          # set JWT_SECRET at minimum
+cp .env.example .env          # compose interpolates this file automatically
 docker compose up --build
 ```
 
-Postgres, Redis, the API, the worker and the web app come up together. Migrations and the demo seed run on the API's first boot.
+Six services: `postgres`, `redis`, a one-shot `migrate` that applies the schema and seeds the demo account, then `api`, `worker` and `web`. Nothing starts before the migration exits 0, and the web container waits for the API's healthcheck.
 
 - Web: http://localhost:5173
 - API: http://localhost:4000/api/health
 - Readiness (DB + Redis): http://localhost:4000/api/ready
+
+One image, three roles: `api`, `worker` and `web` all run from the same build (`pinpoint-dev:latest`) and differ only in command, so `docker compose up --build` builds once and pulls one base image.
+
+**No hot reload in Docker.** Source is baked into the image rather than bind-mounted, because a host `node_modules` mounted over `/app` shadows the container's and breaks argon2's native binary (glibc on the host, musl or a different glibc inside). For hot reload use `npm run dev:all` instead.
+
+#### If the image pull fails
+
+`failed to resolve reference "docker.io/library/node:20-bookworm-slim": TLS handshake timeout` or `read: connection reset by peer` on a `production.cloudfront.docker.com` URL is your network reaching Docker Hub's CDN, not this repo. In order of how often it works:
+
+1. **Retry.** These are usually transient. `docker pull node:20-bookworm-slim` on its own, then `docker compose up`.
+2. **Force IPv4.** The classic signature is an IPv6 route that dies mid-transfer (`read tcp [2401:...]->[2600:9000:...]`).
+   - Docker Desktop: Settings -> Resources -> Network, turn IPv6 off, apply and restart.
+   - Linux: add `{"ipv6": false}` to `/etc/docker/daemon.json`, then `sudo systemctl restart docker`. To test quickly: `sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1`.
+3. **Use a registry mirror** in `/etc/docker/daemon.json`, e.g. `{"registry-mirrors": ["https://<your-mirror>"]}`, then restart Docker.
+4. **Skip Docker.** Use Option B against a Postgres you already have, or run only the data services: `docker compose up postgres redis` (two small images instead of the app image).
 
 ### Option B - Local Node (no Docker)
 
@@ -210,7 +225,7 @@ The one red flag is the point: the product shows you what to revisit, it does no
 
 **Verified in this build** (real PostgreSQL 16, real HTTP, 26 tests + a live smoke run): migrations, seed, auth, user isolation, 2-page limit, extraction job via the inline driver, explain + code-side scoring, gap endpoint, places, flags, flag drag persistence, recall start/hide/submit/finish, dashboard tasks, exam countdown, socket payload contract, web production build, and the API serving stored images.
 
-**Not executed here** (no Redis or Docker in the build environment): the BullMQ worker process, the Redis socket adapter, and the Redis rate-limit store. The code paths exist and typecheck; treat them as unverified until you run `docker compose up`.
+**Not executed here** (no Redis or Docker in the build environment): the BullMQ worker process, the Redis socket adapter, and the Redis rate-limit store. The code paths exist and typecheck; treat them as unverified until you run `docker compose up`. The Docker packaging itself (`Dockerfile`, `docker-compose.yml`) is likewise unrun - the compose graph was validated by parsing it, not by building it.
 
 **Also not exercised here**: real Gemini calls (no key - the mock provider ran instead) and real Cloudinary uploads. Both sit behind the same interfaces the mock and local drivers implement.
 

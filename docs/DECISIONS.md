@@ -93,3 +93,16 @@ The build sandbox has no Docker, no Postgres server and no Redis. Verification r
 ## D-19 Uploads go through the API, not the browser
 
 The brief mentions a signed upload. The API receives the multipart body, validates magic bytes and the page budget, then stores it server-side (local disk or a signed Cloudinary call) and enqueues the job. This keeps the 2-page rule authoritative - a browser that lies about page count cannot get past it.
+
+## D-20 Docker packaging: one image, three roles, no bind mount
+
+The first compose file ran `npm install` inside three containers against a bind-mounted source tree. That was wrong twice over: three concurrent installs racing over the same `node_modules`, and a host `node_modules` (glibc, macOS or otherwise) shadowing the container's, which breaks argon2's native binary. Replaced with a real `Dockerfile`:
+
+- `node:20-bookworm-slim`, not alpine. argon2 ships glibc prebuilds and Prisma needs openssl; on alpine both would compile from source and need a toolchain in the runtime image.
+- Dependency layer (`npm ci`) keyed on the manifests and lockfile only, so source edits do not reinstall.
+- `prisma generate` in the build stage, after the source copy.
+- One image (`pinpoint-dev:latest`) with three commands, so a build happens once and one base image is pulled.
+- Source is baked in, not bind-mounted. Consequence: **no hot reload in Docker** - stated in the README rather than papered over.
+- A one-shot `migrate` service runs `migrate deploy` + seed and exits; `api` and `worker` wait on `service_completed_successfully`, and `web` waits on the API healthcheck (`/api/ready`). No fixed sleeps, no race between the API booting and the schema existing.
+
+Docker itself was never executed in the build sandbox (no daemon), so the compose graph is validated by parsing it, not by running it.

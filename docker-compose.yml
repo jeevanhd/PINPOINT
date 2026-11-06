@@ -1,8 +1,44 @@
-# Full stack: postgres, redis, api, worker, web.
-# Migrations and the demo seed run once on first boot.
+# Full stack: postgres, redis, a one-shot migrate+seed, then api, worker and web.
+#
+#   cp .env.example .env      # compose interpolates this file automatically
+#   docker compose up --build
+#
+# Source is baked into the image, not bind-mounted: a host node_modules would
+# shadow the container's and break argon2's native binary. There is no hot
+# reload here - use `npm run dev:all` for that.
+
+name: pinpoint
+
+x-app: &app
+  image: pinpoint-dev:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: dev
+  restart: unless-stopped
+
+x-app-env: &app-env
+  NODE_ENV: development
+  API_PORT: 4000
+  WEB_ORIGIN: http://localhost:5173
+  PUBLIC_API_URL: http://localhost:4000
+  DATABASE_URL: postgresql://pinpoint:pinpoint@postgres:5432/pinpoint?schema=public
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:-local-dev-secret-that-is-long-enough-for-hs256}
+  JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+  AI_CACHE_TTL_SECONDS: ${AI_CACHE_TTL_SECONDS:-86400}
+  STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+  LOCAL_STORAGE_DIR: /app/apps/api/storage
+  MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+  MAX_PAGES_PER_TOPIC: 2
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: pinpoint
       POSTGRES_PASSWORD: pinpoint
@@ -15,10 +51,11 @@ services:
       test: ['CMD-SHELL', 'pg_isready -U pinpoint -d pinpoint']
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     command: ['redis-server', '--appendonly', 'yes']
     ports:
       - '6379:6379'
@@ -28,81 +65,72 @@ services:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
+
+  # Runs once, exits 0. Nothing else starts until the schema and demo data exist.
+  migrate:
+    <<: *app
+    restart: 'no'
+    environment: *app-env
+    command:
+      - sh
+      - -lc
+      - npm run db:deploy -w @pinpoint/api && npm run db:seed -w @pinpoint/api
+    volumes:
+      - storage:/app/apps/api/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
-    image: node:20-alpine
-    working_dir: /app
-    command: >
-      sh -c "npm install --no-audit --no-fund &&
-             npm run db:deploy -w @pinpoint/api &&
-             npm run db:seed -w @pinpoint/api &&
-             npm run dev -w @pinpoint/api"
-    environment:
-      NODE_ENV: development
-      API_PORT: 4000
-      WEB_ORIGIN: http://localhost:5173
-      PUBLIC_API_URL: http://localhost:4000
-      DATABASE_URL: postgresql://pinpoint:pinpoint@postgres:5432/pinpoint?schema=public
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-that-is-long-enough-for-hs256}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
-      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
-      LOCAL_STORAGE_DIR: /app/apps/api/storage
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
-      MAX_PAGES_PER_TOPIC: 2
+    <<: *app
+    environment: *app-env
+    command: ['npm', 'run', 'start', '-w', '@pinpoint/api']
     ports:
       - '4000:4000'
     volumes:
-      - .:/app
       - storage:/app/apps/api/storage
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   worker:
-    image: node:20-alpine
-    working_dir: /app
-    command: >
-      sh -c "npm install --no-audit --no-fund &&
-             npm run dev:worker -w @pinpoint/api"
-    environment:
-      NODE_ENV: development
-      DATABASE_URL: postgresql://pinpoint:pinpoint@postgres:5432/pinpoint?schema=public
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-local-dev-secret-that-is-long-enough-for-hs256}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
-      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
-      LOCAL_STORAGE_DIR: /app/apps/api/storage
+    <<: *app
+    environment: *app-env
+    command: ['npm', 'run', 'start:worker', '-w', '@pinpoint/api']
     volumes:
-      - .:/app
       - storage:/app/apps/api/storage
     depends_on:
-      api:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
   web:
-    image: node:20-alpine
-    working_dir: /app
-    command: >
-      sh -c "npm install --no-audit --no-fund &&
-             npm run dev -w @pinpoint/web"
+    <<: *app
     environment:
       NODE_ENV: development
       VITE_API_URL: http://api:4000
+    command: ['npm', 'run', 'dev', '-w', '@pinpoint/web']
     ports:
       - '5173:5173'
-    volumes:
-      - .:/app
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   pgdata:

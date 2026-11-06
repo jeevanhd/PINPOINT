@@ -1,0 +1,15 @@
+.git
+.gitignore
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+logs
+apps/api/storage
+apps/api/storage-test
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
