@@ -1,0 +1,229 @@
+// Pinpoint schema - exactly the 10 tables from the brief (section 6 / section 9).
+// Upload job status deliberately does NOT live here: it lives in BullMQ/Redis.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TopicSource {
+  UPLOADED
+  AI
+  MANUAL
+}
+
+enum RecallStatus {
+  ACTIVE
+  FINISHED
+}
+
+enum FlagOutcome {
+  GREEN
+  RED
+}
+
+/// 1
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  passMark     Int      @default(70)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  units        Unit[]
+  topics       Topic[]
+  files        TopicFile[]
+  explanations Explanation[]
+  places       Place[]
+  flags        Flag[]
+  recallRounds RecallRound[]
+  exams        Exam[]
+
+  @@index([email])
+  @@map("users")
+}
+
+/// 2
+model Unit {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topics Topic[]
+
+  @@index([userId])
+  @@map("units")
+}
+
+/// 3
+model Topic {
+  id            String      @id @default(cuid())
+  userId        String
+  unitId        String?
+  title         String
+  notes         String      @default("")
+  source        TopicSource @default(MANUAL)
+  /// Array of { id: number, text: string }. Ids are stable and never reused.
+  keyPointsJson Json        @default("[]")
+  /// Monotonic counter so a removed key point's id is never handed out again.
+  keyPointSeq   Int         @default(0)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unit         Unit?         @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  files        TopicFile[]
+  explanations Explanation[]
+  flags        Flag[]
+
+  @@index([userId])
+  @@index([unitId])
+  @@map("topics")
+}
+
+/// 4
+model TopicFile {
+  id           String   @id @default(cuid())
+  topicId      String
+  userId       String
+  storageKey   String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  pageCount    Int      @default(1)
+  createdAt    DateTime @default(now())
+
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([topicId])
+  @@index([userId])
+  @@map("topic_files")
+}
+
+/// 5
+model Explanation {
+  id         String   @id @default(cuid())
+  topicId    String
+  userId     String
+  transcript String
+  score      Int
+  passed     Boolean
+  /// Full validated JudgeResult: per-point verdicts, evidence, feedback, summary, gaps.
+  resultJson Json
+  fallback   Boolean  @default(false)
+  durationSec Int     @default(0)
+  createdAt  DateTime @default(now())
+
+  topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([topicId, createdAt])
+  @@index([userId])
+  @@map("explanations")
+}
+
+/// 6
+model Place {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  imageKey  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flags Flag[]
+  recallRounds RecallRound[]
+
+  @@index([userId])
+  @@map("places")
+}
+
+/// 7
+model Flag {
+  id         String   @id @default(cuid())
+  placeId    String
+  userId     String
+  /// Percentages of the image so flags stay aligned at any screen size.
+  xPct       Float
+  yPct       Float
+  label      String
+  notes      String   @default("")
+  topicId    String?
+  keyPointId Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  place  Place        @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic  Topic?       @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  results RecallResult[]
+
+  @@index([placeId])
+  @@index([userId])
+  @@index([topicId])
+  @@map("flags")
+}
+
+/// 8
+model RecallRound {
+  id            String       @id @default(cuid())
+  userId        String
+  placeId       String
+  timePerFlagSec Int
+  status        RecallStatus @default(ACTIVE)
+  startedAt     DateTime     @default(now())
+  finishedAt    DateTime?
+
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place   Place          @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  results RecallResult[]
+
+  @@index([userId, startedAt])
+  @@index([placeId])
+  @@map("recall_rounds")
+}
+
+/// 9
+model RecallResult {
+  id       String       @id @default(cuid())
+  roundId  String
+  flagId   String
+  userId   String
+  outcome  FlagOutcome
+  msTaken  Int          @default(0)
+  createdAt DateTime    @default(now())
+
+  round RecallRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  flag  Flag        @relation(fields: [flagId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, flagId])
+  @@index([roundId])
+  @@index([userId])
+  @@map("recall_results")
+}
+
+/// 10
+model Exam {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  subject   String?
+  examDate  DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, examDate])
+  @@map("exams")
+}
