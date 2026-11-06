@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Pinpoint
+Comment=Explain it. Pin it. Own it.
+Exec=node __ROOT__/scripts/launcher.mjs start
+Icon=__ROOT__/apps/web/public/icons/icon-512.png
+Terminal=false
+Categories=Education;Utility;
