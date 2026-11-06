@@ -1,0 +1,33 @@
+{
+  "name": "pinpoint",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinpoint - explain it, pin it, own it.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node scripts/dev-all.mjs",
+    "dev:all": "node scripts/dev-all.mjs",
+    "dev:api": "npm run dev -w @pinpoint/api",
+    "dev:web": "npm run dev -w @pinpoint/web",
+    "dev:worker": "npm run dev:worker -w @pinpoint/api",
+    "build": "npm run build -w @pinpoint/web",
+    "lint": "eslint .",
+    "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p apps/api/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
+    "test": "npm run test -w @pinpoint/api",
+    "db:migrate": "npm run db:migrate -w @pinpoint/api",
+    "db:seed": "npm run db:seed -w @pinpoint/api",
+    "db:studio": "npm run db:studio -w @pinpoint/api",
+    "verify": "npm run lint && npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "eslint": "^9.13.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.11.0"
+  }
+}
